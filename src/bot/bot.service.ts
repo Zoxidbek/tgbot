@@ -4,152 +4,352 @@ import { Bot } from './bot.schema';
 import { Model } from 'mongoose';
 import TelegramBot from 'node-telegram-bot-api';
 
-interface Question {
-  q: string;
-  answer: number;
-}
-
-interface SessionData {
-  questions: Question[];
-  current: number;
-  correct: number;
-}
-
 @Injectable()
 export class BotService {
   private bot = new TelegramBot(process.env.TOKEN as string, { polling: true });
-  private sessions = new Map<number, SessionData>();
 
   constructor(@InjectModel(Bot.name) private botModel: Model<Bot>) {
-    this.onStart();
-    this.onMessage();
-    this.onActions();
+    this.onStart()
+    this.onContact()
+    this.onLocation()
+    this.onMessage()
+    this.onCallback()
   }
 
-  
   private async onStart() {
     this.bot.onText(/\/start/, async (msg) => {
       const chatId = msg.chat.id;
       const username = msg.chat.username ?? 'user';
+      const firstname = msg.chat.first_name ?? 'user';
 
       const exists = await this.botModel.findOne({ chatId });
       if (!exists) {
         await this.botModel.create({ chatId, username });
       }
 
-      this.bot.sendMessage(
+      await this.bot.sendMessage(
         chatId,
-        `Assalomu alaykum, ${username}! 👋\n` +
-          `Bu matematika bot.\nSizga 10 ta misol beraman. Har biriga javob yuboring.`,
+        `Assalomu alaykum, <b>${firstname}</b>! 👋\n` +
+          `Botdan foydalanish uchun telefon raqamingizni va joylashuvingizni yuboring 📞📍`,
         {
+          parse_mode: 'HTML',
           reply_markup: {
-            inline_keyboard: [
-              [{ text: 'Start test', callback_data: 'start_quiz' }],
+            keyboard: [
+              [
+                {
+                  text: '📱 Telefon raqamni yuborish',
+                  request_contact: true,
+                },
+              ],
+              [
+                {
+                  text: '📍 Joylashuvni yuborish',
+                  request_location: true,
+                },
+              ],
             ],
+            resize_keyboard: true,
+            one_time_keyboard: true,
           },
         },
       );
     });
   }
 
-  private onActions() {
-    this.bot.on('callback_query', async (query) => {
-      const chatId = query.message!.chat.id
-      const action = query.data;
-
-      if (action === 'start_quiz' || action === 'again_quiz') {
-        await this.bot.answerCallbackQuery(query.id);
-        this.startQuiz(chatId);
-      }
-    });
-  }
-
-
-  private onMessage() {
-    this.bot.on('message', (msg) => {
+  private async onContact() {
+    this.bot.on('contact', async (msg) => {
       const chatId = msg.chat.id;
-      const text = msg.text;
+      const phone = msg.contact?.phone_number;
 
-      const session = this.sessions.get(chatId);
-      if (!session) return;
-
-      const userAnswer = Number(text);
-      if (isNaN(userAnswer)) {
-        return this.bot.sendMessage(chatId, 'faqat raqam yuboring!!');
-      }
-
-      const correctAnswer = session.questions[session.current].answer;
-      if (userAnswer === correctAnswer) {
-        session.correct++;
-        this.bot.sendMessage(chatId, `To'g'ri✅`);
+      if (phone) {
+        await this.botModel.updateOne({ chatId }, { phone });
+        await this.bot.sendMessage(chatId, `✅ Telefon raqamingiz saqlandi`);
+        this.showStartButton(chatId);
       } else {
-        this.bot.sendMessage(chatId, `Javob xato to'g'ri javob: ${correctAnswer}`);
+        await this.bot.sendMessage(
+          chatId,
+          `+998901234567 ko‘rinishida yuboring yoki\n"📱 Telefon raqamni yuborish" tugmasini bosing.`,
+        );
       }
-
-      session.current++;
-      this.askQuestion(chatId);
     });
   }
-  private startQuiz(chatId: number) {
-    const questions = this.generateQuestions();
-    this.sessions.set(chatId, { questions, current: 0, correct: 0 });
 
-    this.bot.sendMessage(chatId, 'test boshlandi');
-    this.askQuestion(chatId);
-  }
+  private async onLocation() {
+    this.bot.on('location', async (msg) => {
+      const chatId = msg.chat.id;
+      const location = msg.location;
 
-  private askQuestion(chatId: number) {
-    const session = this.sessions.get(chatId);
-    if (!session) return;
-
-    if (session.current >= 10) {
-      this.bot.sendMessage(
-        chatId,
-        `✅ Test tugadi!\nTo‘g‘ri javoblar: *${session.correct} / 10*\n Yana 10 ta test kerak bolsa pasdagi tugmani bosing`,
-        {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🔁 Yana 10 ta savol', callback_data: 'again_quiz' }],
-            ],
-          },
-        },
-      );
-      this.sessions.delete(chatId);
-      return;
-    }
-
-    const question = session.questions[session.current].q;
-    this.bot.sendMessage(chatId, `${session.current + 1}: ${question}`);
+      if (location) {
+        await this.botModel.updateOne(
+          { chatId },
+          { location: { lat: location.latitude, lon: location.longitude } },
+        );
+        await this.bot.sendMessage(chatId, `✅ Joylashuvingiz saqlandi`);
+        this.showStartButton(chatId);
+      } else {
+        await this.bot.sendMessage(
+          chatId,
+          `Iltimos, "📍 Joylashuvni yuborish" tugmasini bosing.`,
+        );
+      }
+    });
   }
 
   
-
-  private generateQuestions(): Question[] {
-    const ops = ['+', '-', '*'];
-    const questions: Question[] = [];
-
-    for (let i = 0; i < 10; i++) {
-      const a = Math.floor(Math.random() * 10) + 1;
-      const b = Math.floor(Math.random() * 10) + 1;
-      const op = ops[Math.floor(Math.random() * ops.length)];
-      const q = `${a} ${op} ${b} = ?`;
-
-      let answer = 0;
-      switch (op) {
-        case '+':
-          answer = a + b;
-          break;
-        case '-':
-          answer = a - b;
-          break;
-        case '*':
-          answer = a * b;
-          break;
-      }
-
-      questions.push({ q, answer });
-    }
-    return questions;
+  private async showStartButton(chatId: number) {
+    await this.bot.sendMessage(chatId, `Endi botdan to'liq foydalanishingiz mumkin👇`, {
+      reply_markup: {
+        keyboard: [[{ text: 'Menyu🧾' },{text: 'Manzil📍'}]],
+        resize_keyboard: true,
+      },
+    });
   }
+
+
+private async onMessage() {
+  this.bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+
+    if (msg.text === 'Menyu🧾') {
+      await this.bot.sendMessage(chatId, `Kategoriyani tanlang 🍽️`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🍔 Burgerlar', callback_data: 'category_burger' }],
+            [{ text: '🫔 Shaverma', callback_data: 'category_shaverma' }],
+            [{ text: '🥤 Ichimliklar', callback_data: 'category_drink' }],
+          ],
+        },
+      });
+    }
+
+    if (msg.text === 'Manzil📍') {
+      await this.bot.sendMessage(chatId, `📍 Manzil: 
+● ул. Аль-Хорезми, 72
+● Ургенч, 4-й микрорайон, 31.
+● Ургенч, улица Абульгази Бахадырхана, 205.`)
+    }
+  })
+}
+
+
+
+private async onCallback() {
+  this.bot.on('callback_query', async (query) => {
+    const chatId = query.message?.chat.id;
+    const data = query.data;
+
+    if (!chatId || !data) return;
+
+
+    if (data === 'category_burger') {
+      await this.bot.sendMessage(chatId, `🍔 Burgerlar ro‘yxati:`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Cheeseburger (Oddiy) - 25 000 so‘m', callback_data: 'burger_single' }],
+            [{ text: 'Double Cheeseburger - 33 000 so‘m', callback_data: 'burger_double' }],
+            [{ text: '⬅️ Ortga', callback_data: 'back_to_menu' }],
+          ],
+        },
+      });
+    }
+
+    if (data === 'burger_single') {
+      await this.bot.sendMessage(
+        chatId,
+        `🍔 Siz <b>Cheeseburger (Oddiy)</b> tanladingiz!\nNarxi: 25 000 so‘m\nZakaz berasizmi?`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ Ha, zakaz beraman', callback_data: 'order_burger_single' },
+                { text: '❌ Bekor qilish', callback_data: 'cancel' },
+              ],
+            ],
+          },
+        },
+      );
+    }
+
+    if (data === 'burger_double') {
+      await this.bot.sendMessage(
+        chatId,
+        `🍔 Siz <b>Double Cheeseburger</b> tanladingiz!\nNarxi: 33 000 so‘m\nZakaz berasizmi?`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ Ha, zakaz beraman', callback_data: 'order_burger_double' },
+                { text: '❌ Bekor qilish', callback_data: 'cancel' },
+              ],
+            ],
+          },
+        },
+      );
+    }
+
+    if (data === 'order_burger_single') {
+      await this.bot.sendMessage(chatId, `✅ Cheeseburger buyurtmangiz qabul qilindi! 🚚`);
+    }
+
+    if (data === 'order_burger_double') {
+      await this.bot.sendMessage(chatId, `✅ Double Cheeseburger buyurtmangiz qabul qilindi! 🚚`);
+    }
+
+    if (data === 'category_shaverma') {
+      await this.bot.sendMessage(chatId, `🫔 Shavermalar ro‘yxati:`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Oddiy Shaverma - 22 000 so‘m', callback_data: 'shaverma_single' }],
+            [{ text: 'Double Shaverma - 30 000 so‘m', callback_data: 'shaverma_double' }],
+            [{ text: '⬅️ Ortga', callback_data: 'back_to_menu' }],
+          ],
+        },
+      });
+    }
+
+    if (data === 'shaverma_single') {
+      await this.bot.sendMessage(
+        chatId,
+        `🫔 Siz <b>Oddiy Shaverma</b> tanladingiz!\nNarxi: 22 000 so‘m\nZakaz berasizmi?`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ Ha, zakaz beraman', callback_data: 'order_shaverma_single' },
+                { text: '❌ Bekor qilish', callback_data: 'cancel' },
+              ],
+            ],
+          },
+        },
+      );
+    }
+
+    if (data === 'shaverma_double') {
+      await this.bot.sendMessage(
+        chatId,
+        `🫔 Siz <b>Double Shaverma</b> tanladingiz!\nNarxi: 30 000 so‘m\nZakaz berasizmi?`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ Ha, zakaz beraman', callback_data: 'order_shaverma_double' },
+                { text: '❌ Bekor qilish', callback_data: 'cancel' },
+              ],
+            ],
+          },
+        },
+      );
+    }
+
+    if (data === 'order_shaverma_single') {
+      await this.bot.sendMessage(chatId, `✅ Oddiy Shaverma buyurtmangiz qabul qilindi! 🚚`);
+    }
+
+    if (data === 'order_shaverma_double') {
+      await this.bot.sendMessage(chatId, `✅ Double Shaverma buyurtmangiz qabul qilindi! 🚚`);
+    }
+
+    if (data === 'category_drink') {
+      await this.bot.sendMessage(chatId, `🥤 Ichimliklar ro‘yxati:`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Coca-Cola - 10 000 so‘m', callback_data: 'drink_cola' }],
+            [{ text: 'Fanta - 10 000 so‘m', callback_data: 'drink_fanta' }],
+            [{ text: 'Pepsi - 10 000 so‘m', callback_data: 'drink_pepsi' }],
+            [{ text: '⬅️ Ortga', callback_data: 'back_to_menu' }],
+          ],
+        },
+      });
+    }
+
+    if (data === 'drink_cola') {
+      await this.bot.sendMessage(
+        chatId,
+        `🥤 Siz <b>Coca-Cola</b> tanladingiz!\nNarxi: 10 000 so‘m\nZakaz berasizmi?`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ Ha, zakaz beraman', callback_data: 'order_drink_cola' },
+                { text: '❌ Bekor qilish', callback_data: 'cancel' },
+              ],
+            ],
+          },
+        },
+      );
+    }
+
+    if (data === 'drink_fanta') {
+      await this.bot.sendMessage(
+        chatId,
+        `🥤 Siz <b>Fanta</b> tanladingiz!\nNarxi: 10 000 so‘m\nZakaz berasizmi?`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ Ha, zakaz beraman', callback_data: 'order_drink_fanta' },
+                { text: '❌ Bekor qilish', callback_data: 'cancel' },
+              ],
+            ],
+          },
+        },
+      );
+    }
+
+    if (data === 'drink_pepsi') {
+      await this.bot.sendMessage(
+        chatId,
+        `🥤 Siz <b>Pepsi</b> tanladingiz!\nNarxi: 10 000 so‘m\nZakaz berasizmi?`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ Ha, zakaz beraman', callback_data: 'order_drink_pepsi' },
+                { text: '❌ Bekor qilish', callback_data: 'cancel' },
+              ],
+            ],
+          },
+        },
+      );
+    }
+
+    if (data === 'order_drink_cola') {
+      await this.bot.sendMessage(chatId, `✅ Coca-Cola buyurtmangiz qabul qilindi! 🚚`);
+    }
+
+    if (data === 'order_drink_fanta') {
+      await this.bot.sendMessage(chatId, `✅ Fanta buyurtmangiz qabul qilindi! 🚚`);
+    }
+
+    if (data === 'order_drink_pepsi') {
+      await this.bot.sendMessage(chatId, `✅ Pepsi buyurtmangiz qabul qilindi! 🚚`);
+    }
+
+    if (data === 'back_to_menu') {
+      await this.bot.sendMessage(chatId, `Kategoriyani tanlang 🍽️`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🍔 Burgerlar', callback_data: 'category_burger' }],
+            [{ text: '🫔 Shaverma', callback_data: 'category_shaverma' }],
+            [{ text: '🥤 Ichimliklar', callback_data: 'category_drink' }],
+          ],
+        },
+      });
+    }
+
+
+    if (data === 'cancel') {
+      await this.bot.sendMessage(chatId, `❌ Buyurtma bekor qilindi.`);
+    }
+
+    await this.bot.answerCallbackQuery(query.id);
+  });
+}
 }
